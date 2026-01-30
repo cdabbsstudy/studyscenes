@@ -84,7 +84,8 @@ async def generate_assets(project_id: str, db: AsyncSession) -> None:
         raise ValueError("Script must be generated first")
 
     script = ScriptResponse(**project.script)
-    total_steps = len(script.scenes) + 1  # images + 1 audio
+    outline = OutlineResponse(**project.outline) if project.outline else None
+    total_steps = len(script.scenes) * 2  # image + audio per scene
     done = 0
 
     _asset_status[project_id] = {
@@ -92,13 +93,25 @@ async def generate_assets(project_id: str, db: AsyncSession) -> None:
     }
 
     try:
-        # Generate images
         image_svc = get_image_service()
-        for i, scene_data in enumerate(script.scenes):
-            img_path = storage.scene_image_path(project_id, i)
-            await image_svc.generate(scene_data.title, scene_data.visual_desc, img_path)
+        voice_svc = get_voice_service()
 
-            # Update scene record
+        for i, scene_data in enumerate(script.scenes):
+            # Resolve outline key_points for this scene (matched by index)
+            key_points = None
+            if outline and i < len(outline.sections):
+                key_points = outline.sections[i].key_points
+
+            # Generate image
+            img_path = storage.scene_image_path(project_id, i)
+            await image_svc.generate(
+                scene_data.title,
+                scene_data.visual_desc,
+                img_path,
+                narration=scene_data.narration,
+                key_points=key_points,
+            )
+
             if i < len(project.scenes):
                 project.scenes[i].image_path = f"/storage/{storage.relative_path(img_path)}"
 
@@ -106,26 +119,23 @@ async def generate_assets(project_id: str, db: AsyncSession) -> None:
             _asset_status[project_id] = {
                 "status": "in_progress",
                 "progress": done / total_steps,
-                "message": f"Generated image {done}/{len(script.scenes)}",
+                "message": f"Generated image {i + 1}/{len(script.scenes)}",
             }
 
-        # Generate single narration audio
-        voice_svc = get_voice_service()
-        audio_path = storage.narration_path(project_id)
-        total_duration = await voice_svc.generate(script, audio_path)
+            # Generate per-scene audio
+            audio_path = storage.scene_audio_path(project_id, i)
+            duration = await voice_svc.generate_scene(scene_data.narration, audio_path)
 
-        project.audio_path = f"/storage/{storage.relative_path(audio_path)}"
-
-        # Update scene durations based on word counts
-        total_words = sum(len(s.narration.split()) for s in script.scenes)
-        for i, scene_data in enumerate(script.scenes):
-            words = len(scene_data.narration.split())
-            duration = (words / max(total_words, 1)) * total_duration
-            duration = max(duration, 1.0)
             if i < len(project.scenes):
                 project.scenes[i].duration_sec = duration
 
-        done += 1
+            done += 1
+            _asset_status[project_id] = {
+                "status": "in_progress",
+                "progress": done / total_steps,
+                "message": f"Generated audio {i + 1}/{len(script.scenes)}",
+            }
+
         project.status = "assets_ready"
         await db.commit()
 
@@ -150,22 +160,22 @@ async def generate_video(project_id: str, db: AsyncSession) -> str:
 
     try:
         scene_inputs = []
-        for scene in project.scenes:
+        for i, scene in enumerate(project.scenes):
             if not scene.image_path:
                 raise ValueError(f"Scene {scene.order_index} missing image")
-            # Convert URL path back to filesystem path
             img_fs_path = storage.base / scene.image_path.replace("/storage/", "")
+            audio_fs_path = storage.scene_audio_path(project_id, i)
             scene_inputs.append(SceneInput(
                 image_path=img_fs_path,
+                audio_path=audio_fs_path,
                 title=scene.title,
                 duration_sec=scene.duration_sec,
             ))
 
-        audio_fs_path = storage.base / project.audio_path.replace("/storage/", "")
         output_path = storage.video_output_path(project_id)
 
         video_svc = get_video_service()
-        await video_svc.stitch(scene_inputs, audio_fs_path, output_path)
+        await video_svc.stitch(scene_inputs, output_path)
 
         video_url = f"/storage/{storage.relative_path(output_path)}"
         project.video_path = video_url

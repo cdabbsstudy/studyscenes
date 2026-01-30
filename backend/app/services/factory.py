@@ -15,24 +15,21 @@ def get_outline_service() -> OutlineServiceBase:
 
 
 def get_script_service() -> ScriptServiceBase:
-    if settings.USE_MOCK_AI:
-        from app.services.mock.script import MockScriptService
-        return MockScriptService()
-    raise NotImplementedError("Real script service not yet implemented")
+    from app.services.mock.script import MockScriptService
+    return MockScriptService()
 
 
 def get_voice_service() -> VoiceServiceBase:
-    if settings.USE_MOCK_AI:
+    if settings.USE_MOCK_TTS:
         from app.services.mock.voice import MockVoiceService
         return MockVoiceService()
-    raise NotImplementedError("Real voice service not yet implemented")
+    from app.services.real.voice import RealVoiceService
+    return RealVoiceService()
 
 
 def get_image_service() -> ImageServiceBase:
-    if settings.USE_MOCK_AI:
-        from app.services.mock.image import MockImageService
-        return MockImageService()
-    raise NotImplementedError("Real image service not yet implemented")
+    from app.services.mock.image import MockImageService
+    return MockImageService()
 
 
 def get_video_service() -> VideoServiceBase:

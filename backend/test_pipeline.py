@@ -101,18 +101,22 @@ print("\n" + "=" * 60)
 project = api("GET", f"/projects/{pid}")
 print(f"Final status: {project['status']}")
 print(f"Video path:   {project['video_path']}")
-print(f"Audio path:   {project['audio_path']}")
 print(f"Scenes:       {len(project['scenes'])}")
 for s in project["scenes"]:
     print(f"  - {s['title']}: {s['duration_sec']:.1f}s, image={s['image_path']}")
 
 # Verify files exist
 import os
-storage = "./storage"
-vid_path = os.path.join(storage, project["video_path"].replace("/storage/", ""))
-aud_path = os.path.join(storage, project["audio_path"].replace("/storage/", ""))
+storage_dir = "./storage"
+vid_path = os.path.join(storage_dir, project["video_path"].replace("/storage/", ""))
 print(f"\nVideo file exists: {os.path.exists(vid_path)} ({os.path.getsize(vid_path) if os.path.exists(vid_path) else 0} bytes)")
-print(f"Audio file exists: {os.path.exists(aud_path)} ({os.path.getsize(aud_path) if os.path.exists(aud_path) else 0} bytes)")
+
+# Check per-scene audio files
+for i in range(len(project["scenes"])):
+    audio_file = os.path.join(storage_dir, pid, "audio", f"scene_{i:03d}.wav")
+    exists = os.path.exists(audio_file)
+    size = os.path.getsize(audio_file) if exists else 0
+    print(f"Scene {i} audio exists: {exists} ({size} bytes)")
 
 # List projects
 print("\nProject list:")

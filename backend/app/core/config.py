@@ -4,6 +4,8 @@ from pathlib import Path
 
 class Settings(BaseSettings):
     USE_MOCK_AI: bool = True
+    USE_MOCK_TTS: bool = True
+    TTS_VOICE: str = "alloy"
     DATABASE_URL: str = "sqlite+aiosqlite:///./studyscenes.db"
     STORAGE_PATH: str = "./storage"
     BACKEND_HOST: str = "0.0.0.0"

@@ -1,14 +1,9 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from app.schemas.generation import ScriptResponse
-
 
 class VoiceServiceBase(ABC):
     @abstractmethod
-    async def generate(self, script: ScriptResponse, output_path: Path) -> float:
-        """Generate a single narration audio file for the entire script.
-
-        Returns the total duration in seconds.
-        """
+    async def generate_scene(self, narration: str, output_path: Path) -> float:
+        """Generate audio for one scene. Returns duration in seconds."""
         ...

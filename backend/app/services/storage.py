@@ -34,6 +34,9 @@ class LocalFileStorage:
     def narration_path(self, project_id: str) -> Path:
         return self.audio_dir(project_id) / "narration.mp3"
 
+    def scene_audio_path(self, project_id: str, index: int) -> Path:
+        return self.audio_dir(project_id) / f"scene_{index:03d}.wav"
+
     def video_output_path(self, project_id: str) -> Path:
         return self.video_dir(project_id) / "output.mp4"
 
