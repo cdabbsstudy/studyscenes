@@ -4,6 +4,7 @@ from app.services.base.script import ScriptServiceBase
 from app.services.base.voice import VoiceServiceBase
 from app.services.base.image import ImageServiceBase
 from app.services.base.video import VideoServiceBase
+from app.services.base.video_clip import VideoClipServiceBase
 
 
 def get_outline_service() -> OutlineServiceBase:
@@ -30,6 +31,14 @@ def get_voice_service() -> VoiceServiceBase:
 def get_image_service() -> ImageServiceBase:
     from app.services.mock.image import MockImageService
     return MockImageService()
+
+
+def get_video_clip_service() -> VideoClipServiceBase:
+    if settings.VIDEO_PROVIDER == "runway":
+        from app.services.real.video_clip import RunwayVideoClipService
+        return RunwayVideoClipService()
+    from app.services.mock.video_clip import MockVideoClipService
+    return MockVideoClipService()
 
 
 def get_video_service() -> VideoServiceBase:

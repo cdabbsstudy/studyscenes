@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     BACKEND_HOST: str = "0.0.0.0"
     BACKEND_PORT: int = 8000
     OPENAI_API_KEY: str = ""
+    VIDEO_PROVIDER: str = "mock"
+    RUNWAY_API_KEY: str = ""
+    SCENE_CLIP_SECONDS: int = 6
+    MAX_TOTAL_VIDEO_SECONDS: int = 90
 
     @property
     def storage_dir(self) -> Path:

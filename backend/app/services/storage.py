@@ -23,6 +23,17 @@ class LocalFileStorage:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def clips_dir(self, project_id: str) -> Path:
+        d = self.project_dir(project_id) / "clips"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def scene_clip_path(self, project_id: str, index: int) -> Path:
+        return self.clips_dir(project_id) / f"scene_{index:03d}.mp4"
+
+    def clip_cache_path(self, project_id: str) -> Path:
+        return self.clips_dir(project_id) / "cache.json"
+
     def video_dir(self, project_id: str) -> Path:
         d = self.project_dir(project_id) / "video"
         d.mkdir(parents=True, exist_ok=True)

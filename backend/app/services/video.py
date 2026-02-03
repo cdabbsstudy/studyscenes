@@ -1,4 +1,5 @@
 import asyncio
+import math
 import tempfile
 import shutil
 from pathlib import Path
@@ -25,9 +26,8 @@ class FFmpegVideoService(VideoServiceBase):
             FFmpegVideoService._has_drawtext = await _check_drawtext()
         return FFmpegVideoService._has_drawtext
 
-    def _vf_filter(self, title: str) -> str:
+    def _vf_filter(self, title: str, base: str = "scale=1280:720") -> str:
         """Build the -vf filter string. Includes drawtext only if available."""
-        base = "scale=1280:720"
         if FFmpegVideoService._has_drawtext:
             return (
                 f"{base},drawtext=text='{self._escape(title)}'"
@@ -47,62 +47,132 @@ class FFmpegVideoService(VideoServiceBase):
         await self._drawtext_available()
 
         try:
-            if len(scenes) == 1:
-                await self._single_scene(scenes[0], output_path)
+            segment_paths: list[Path] = []
+            for i, scene in enumerate(scenes):
+                seg_path = tmp_dir / f"segment_{i:03d}.mp4"
+                await self._make_segment(scene, seg_path, tmp_dir)
+                segment_paths.append(seg_path)
+
+            if len(segment_paths) == 1:
+                shutil.copy2(segment_paths[0], output_path)
             else:
-                await self._multi_scene(scenes, output_path, tmp_dir)
+                await self._concat(segment_paths, output_path, tmp_dir)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    async def _single_scene(self, scene: SceneInput, output_path: Path) -> None:
+    async def _make_segment(
+        self, scene: SceneInput, seg_path: Path, tmp_dir: Path
+    ) -> None:
+        """Dispatch based on visual_path suffix."""
+        if scene.visual_path.suffix == ".mp4":
+            await self._mux_clip_and_audio(scene, seg_path, tmp_dir)
+        else:
+            await self._mux_image_and_audio(scene, seg_path)
+
+    async def _mux_clip_and_audio(
+        self, scene: SceneInput, seg_path: Path, tmp_dir: Path
+    ) -> None:
+        """Align video clip duration to audio, then mux together."""
+        clip_dur = await self._probe_duration(scene.visual_path)
+        audio_dur = scene.duration_sec
+
+        # Align clip duration to audio duration
+        aligned_path = tmp_dir / f"aligned_{seg_path.stem}.mp4"
+
+        if audio_dur > clip_dur and clip_dur > 0:
+            # Loop the clip to cover the audio duration
+            loops_needed = math.ceil(audio_dur / clip_dur) - 1
+            cmd = [
+                "ffmpeg", "-y",
+                "-stream_loop", str(loops_needed),
+                "-i", str(scene.visual_path),
+                "-t", str(audio_dur),
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-r", "30",
+                str(aligned_path),
+            ]
+            await self._run(cmd)
+        elif audio_dur < clip_dur:
+            # Trim the clip to audio duration
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(scene.visual_path),
+                "-t", str(audio_dur),
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-r", "30",
+                str(aligned_path),
+            ]
+            await self._run(cmd)
+        else:
+            aligned_path = scene.visual_path
+
+        # Mux aligned video + audio
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(aligned_path),
+            "-i", str(scene.audio_path),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-r", "30",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-map", "0:v",
+            "-map", "1:a",
+            "-shortest",
+            str(seg_path),
+        ]
+        await self._run(cmd)
+
+    async def _mux_image_and_audio(
+        self, scene: SceneInput, seg_path: Path
+    ) -> None:
+        """Still-image + audio mux (original behavior)."""
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1",
-            "-i", str(scene.image_path),
+            "-i", str(scene.visual_path),
             "-i", str(scene.audio_path),
             "-c:v", "libx264",
             "-tune", "stillimage",
             "-pix_fmt", "yuv420p",
+            "-r", "30",
             "-vf", self._vf_filter(scene.title),
             "-c:a", "aac",
             "-b:a", "128k",
             "-shortest",
             "-map", "0:v:0",
             "-map", "1:a:0",
-            "-movflags", "+faststart",
-            str(output_path),
+            str(seg_path),
         ]
         await self._run(cmd)
 
-    async def _multi_scene(
-        self, scenes: list[SceneInput], output_path: Path, tmp_dir: Path
-    ) -> None:
-        clip_paths: list[Path] = []
-        for i, scene in enumerate(scenes):
-            clip_path = tmp_dir / f"clip_{i:03d}.mp4"
-            cmd = [
-                "ffmpeg", "-y",
-                "-loop", "1",
-                "-i", str(scene.image_path),
-                "-i", str(scene.audio_path),
-                "-c:v", "libx264",
-                "-tune", "stillimage",
-                "-pix_fmt", "yuv420p",
-                "-r", "30",
-                "-vf", self._vf_filter(scene.title),
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-shortest",
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                str(clip_path),
-            ]
-            await self._run(cmd)
-            clip_paths.append(clip_path)
+    async def _probe_duration(self, path: Path) -> float:
+        """Get media file duration in seconds via ffprobe."""
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        try:
+            return float(stdout.decode().strip())
+        except ValueError:
+            return 0.0
 
-        # Concatenate all clips via concat demuxer
+    async def _concat(
+        self, segment_paths: list[Path], output_path: Path, tmp_dir: Path
+    ) -> None:
         concat_file = tmp_dir / "concat.txt"
-        lines = [f"file '{p}'\n" for p in clip_paths]
+        lines = [f"file '{p}'\n" for p in segment_paths]
         concat_file.write_text("".join(lines))
 
         cmd = [

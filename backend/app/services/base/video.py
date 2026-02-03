@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass
 class SceneInput:
-    image_path: Path
+    visual_path: Path   # .mp4 (AI clip) or .png (fallback image)
     audio_path: Path
     title: str
     duration_sec: float

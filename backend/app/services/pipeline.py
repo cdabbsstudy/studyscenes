@@ -1,7 +1,11 @@
+import logging
+from pathlib import Path
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.models.project import Project
 from app.models.scene import Scene
 from app.schemas.generation import OutlineResponse, ScriptResponse
@@ -11,9 +15,13 @@ from app.services.factory import (
     get_voice_service,
     get_image_service,
     get_video_service,
+    get_video_clip_service,
 )
 from app.services.storage import LocalFileStorage
 from app.services.base.video import SceneInput
+from app.services.clip_cache import ClipCache
+
+logger = logging.getLogger(__name__)
 
 # In-memory status tracking (sufficient for MVP single-process)
 _asset_status: dict[str, dict] = {}
@@ -85,7 +93,7 @@ async def generate_assets(project_id: str, db: AsyncSession) -> None:
 
     script = ScriptResponse(**project.script)
     outline = OutlineResponse(**project.outline) if project.outline else None
-    total_steps = len(script.scenes) * 2  # image + audio per scene
+    total_steps = len(script.scenes) * 2  # visual + audio per scene
     done = 0
 
     _asset_status[project_id] = {
@@ -93,8 +101,13 @@ async def generate_assets(project_id: str, db: AsyncSession) -> None:
     }
 
     try:
+        clip_svc = get_video_clip_service()
         image_svc = get_image_service()
         voice_svc = get_voice_service()
+
+        cache = ClipCache(storage.clip_cache_path(project_id))
+        clip_duration = settings.SCENE_CLIP_SECONDS
+        max_clip_scenes = settings.MAX_TOTAL_VIDEO_SECONDS // clip_duration
 
         for i, scene_data in enumerate(script.scenes):
             # Resolve outline key_points for this scene (matched by index)
@@ -102,24 +115,45 @@ async def generate_assets(project_id: str, db: AsyncSession) -> None:
             if outline and i < len(outline.sections):
                 key_points = outline.sections[i].key_points
 
-            # Generate image
+            # Determine visual path for this scene
+            clip_path = storage.scene_clip_path(project_id, i)
             img_path = storage.scene_image_path(project_id, i)
-            await image_svc.generate(
-                scene_data.title,
-                scene_data.visual_desc,
-                img_path,
-                narration=scene_data.narration,
-                key_points=key_points,
+            prompt_hash = ClipCache.compute_hash(
+                scene_data.visual_desc, scene_data.title, clip_duration
             )
 
+            visual_path: Path
+            if cache.is_valid(i, prompt_hash, clip_path):
+                # Cache hit — reuse existing clip
+                visual_path = clip_path
+                logger.info("Cache hit for scene %d: %s", i, clip_path)
+            elif i < max_clip_scenes:
+                # Within budget — try clip generation with fallback
+                visual_path = await _generate_clip_with_fallback(
+                    clip_svc, image_svc, scene_data, clip_path, img_path,
+                    clip_duration, key_points,
+                )
+                if visual_path.suffix == ".mp4":
+                    cache.set(i, prompt_hash, clip_path)
+            else:
+                # Over budget — static image only
+                await image_svc.generate(
+                    scene_data.title,
+                    scene_data.visual_desc,
+                    img_path,
+                    narration=scene_data.narration,
+                    key_points=key_points,
+                )
+                visual_path = img_path
+
             if i < len(project.scenes):
-                project.scenes[i].image_path = f"/storage/{storage.relative_path(img_path)}"
+                project.scenes[i].image_path = f"/storage/{storage.relative_path(visual_path)}"
 
             done += 1
             _asset_status[project_id] = {
                 "status": "in_progress",
                 "progress": done / total_steps,
-                "message": f"Generated image {i + 1}/{len(script.scenes)}",
+                "message": f"Generated visual {i + 1}/{len(script.scenes)}",
             }
 
             # Generate per-scene audio
@@ -149,6 +183,43 @@ async def generate_assets(project_id: str, db: AsyncSession) -> None:
         raise
 
 
+async def _generate_clip_with_fallback(
+    clip_svc, image_svc, scene_data, clip_path, img_path,
+    clip_duration, key_points,
+) -> Path:
+    """Try clip generation with 1 retry, fall back to static image on failure."""
+    for attempt in range(2):
+        try:
+            await clip_svc.generate(
+                scene_data.title,
+                scene_data.visual_desc,
+                clip_path,
+                narration=scene_data.narration,
+                duration_sec=clip_duration,
+            )
+            return clip_path
+        except Exception:
+            if attempt == 0:
+                logger.warning(
+                    "Clip generation failed for '%s', retrying...", scene_data.title
+                )
+            else:
+                logger.warning(
+                    "Clip generation failed for '%s' after 2 attempts, "
+                    "falling back to static image.", scene_data.title
+                )
+
+    # Fallback to static image
+    await image_svc.generate(
+        scene_data.title,
+        scene_data.visual_desc,
+        img_path,
+        narration=scene_data.narration,
+        key_points=key_points,
+    )
+    return img_path
+
+
 async def generate_video(project_id: str, db: AsyncSession) -> str:
     project = await _get_project(project_id, db, load_scenes=True)
     if project.status not in ("assets_ready", "video_ready"):
@@ -162,11 +233,11 @@ async def generate_video(project_id: str, db: AsyncSession) -> str:
         scene_inputs = []
         for i, scene in enumerate(project.scenes):
             if not scene.image_path:
-                raise ValueError(f"Scene {scene.order_index} missing image")
-            img_fs_path = storage.base / scene.image_path.replace("/storage/", "")
+                raise ValueError(f"Scene {scene.order_index} missing visual asset")
+            visual_fs_path = storage.base / scene.image_path.replace("/storage/", "")
             audio_fs_path = storage.scene_audio_path(project_id, i)
             scene_inputs.append(SceneInput(
-                image_path=img_fs_path,
+                visual_path=visual_fs_path,
                 audio_path=audio_fs_path,
                 title=scene.title,
                 duration_sec=scene.duration_sec,

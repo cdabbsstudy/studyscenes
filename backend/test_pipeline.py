@@ -1,5 +1,6 @@
 """End-to-end pipeline test: create project → outline → script → assets → video"""
 import json
+import os
 import time
 import urllib.request
 import urllib.error
@@ -72,28 +73,31 @@ print(f"  Scenes: {len(project['scenes'])}")
 # Step 3: Generate outline
 print("\n[3/6] Generating outline...")
 outline = api("POST", f"/projects/{pid}/generate/outline")
-print(f"  Sections: {len(outline['sections'])}")
+num_sections = len(outline["sections"])
+print(f"  Sections: {num_sections}")
 for i, s in enumerate(outline["sections"]):
     print(f"    {i+1}. {s['title']} ({len(s['key_points'])} points)")
+assert num_sections >= 8, f"Expected >= 8 sections, got {num_sections}"
 
 # Step 4: Generate script
 print("\n[4/6] Generating script...")
 script = api("POST", f"/projects/{pid}/generate/script")
-print(f"  Scenes: {len(script['scenes'])}")
+num_scenes = len(script["scenes"])
+print(f"  Scenes: {num_scenes}")
 for i, s in enumerate(script["scenes"]):
     words = len(s["narration"].split())
     print(f"    {i+1}. {s['title']} ({words} words, ~{words/150*60:.1f}s)")
 
-# Step 5: Generate assets
-print("\n[5/6] Generating assets (images + audio)...")
+# Step 5: Generate assets (clips + audio)
+print("\n[5/6] Generating assets (clips + audio)...")
 api("POST", f"/projects/{pid}/generate/assets")
-result = poll(f"/projects/{pid}/generate/assets/status", "status", "completed", timeout=30)
+result = poll(f"/projects/{pid}/generate/assets/status", "status", "completed", timeout=120)
 print(f"  Assets done: {result['message']}")
 
 # Step 6: Generate video
 print("\n[6/6] Generating video...")
 api("POST", f"/projects/{pid}/generate/video")
-result = poll(f"/projects/{pid}/generate/video/status", "status", "completed", timeout=60)
+result = poll(f"/projects/{pid}/generate/video/status", "status", "completed", timeout=300)
 print(f"  Video done: {result['video_path']}")
 
 # Final check
@@ -103,13 +107,25 @@ print(f"Final status: {project['status']}")
 print(f"Video path:   {project['video_path']}")
 print(f"Scenes:       {len(project['scenes'])}")
 for s in project["scenes"]:
-    print(f"  - {s['title']}: {s['duration_sec']:.1f}s, image={s['image_path']}")
+    img = s["image_path"]
+    ext = os.path.splitext(img)[1] if img else "?"
+    print(f"  - {s['title']}: {s['duration_sec']:.1f}s, visual={img} ({ext})")
 
 # Verify files exist
-import os
 storage_dir = "./storage"
 vid_path = os.path.join(storage_dir, project["video_path"].replace("/storage/", ""))
 print(f"\nVideo file exists: {os.path.exists(vid_path)} ({os.path.getsize(vid_path) if os.path.exists(vid_path) else 0} bytes)")
+
+# Check for clips directory
+clips_dir = os.path.join(storage_dir, pid, "clips")
+if os.path.exists(clips_dir):
+    clip_files = sorted(os.listdir(clips_dir))
+    print(f"Clips directory: {len(clip_files)} files")
+    for f in clip_files:
+        fp = os.path.join(clips_dir, f)
+        print(f"  {f}: {os.path.getsize(fp)} bytes")
+else:
+    print("Clips directory: not found")
 
 # Check per-scene audio files
 for i in range(len(project["scenes"])):

@@ -13,7 +13,7 @@ SYSTEM_PROMPT = (
     "You generate structured outlines from study material.\n"
     "Return ONLY valid JSON, no markdown fences, no extra text.\n"
     'Format: {"sections": [{"title": "...", "key_points": ["...", "..."]}]}\n'
-    "Rules: 4-8 sections, 3-6 key_points per section."
+    "Rules: 8-12 sections, 3-6 key_points per section."
 )
 
 
